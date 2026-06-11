@@ -1,5 +1,7 @@
 """串口管理：打开/关闭串口、后台收数线程。"""
 
+from __future__ import annotations
+
 import serial
 import serial.tools.list_ports
 from PySide6.QtCore import QThread, Signal

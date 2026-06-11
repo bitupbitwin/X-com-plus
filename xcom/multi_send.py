@@ -1,5 +1,7 @@
 """多条发送：按标签分组，每标签 20 条命令（左右两列），"+"号加标签，右键管理，持久化。"""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -52,10 +54,13 @@ class TagPage(QWidget):
                 for chk, edit in self.entries]
 
     def load_list(self, items):
+        if not isinstance(items, list):
+            items = []
         for (chk, edit), item in zip(self.entries, items):
+            if not isinstance(item, dict):
+                item = {}
             chk.setChecked(bool(item.get("hex")))
-            edit.setText(item.get("text", "")
-                         if isinstance(item, dict) else "")
+            edit.setText(str(item.get("text", "")))
 
 
 class MultiSendPage(QWidget):

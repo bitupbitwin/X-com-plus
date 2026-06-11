@@ -1,4 +1,6 @@
-"""主窗口：串口收发页签 + 多条发送页签 + 状态栏。"""
+"""主窗口：日志接收区 + 单条/多条发送页签 + 状态栏。"""
+
+from __future__ import annotations
 
 from datetime import datetime
 
