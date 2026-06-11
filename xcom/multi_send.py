@@ -1,4 +1,4 @@
-"""多条发送页签：按标签分组，每个标签一页 20 条命令（左右两列），内容持久化。"""
+"""多条发送：按标签分组，每标签 20 条命令（左右两列），"+"号加标签，右键管理，持久化。"""
 
 import json
 from pathlib import Path
@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QGridLayout, QHBoxLayout, QVBoxLayout, QCheckBox,
     QLineEdit, QPushButton, QLabel, QSpinBox, QTabWidget,
-    QInputDialog, QMessageBox,
+    QInputDialog, QMessageBox, QMenu,
 )
 
 ENTRIES_PER_PAGE = 20
@@ -23,6 +23,8 @@ class TagPage(QWidget):
         self.entries = []  # [(hex_chk, line_edit), ...] 共 20 条
 
         grid = QGridLayout(self)
+        grid.setContentsMargins(4, 4, 4, 2)
+        grid.setVerticalSpacing(2)
         for col in range(2):
             base_col = col * 4
             grid.addWidget(QLabel("HEX"), 0, base_col, alignment=Qt.AlignCenter)
@@ -52,29 +54,28 @@ class TagPage(QWidget):
     def load_list(self, items):
         for (chk, edit), item in zip(self.entries, items):
             chk.setChecked(bool(item.get("hex")))
-            edit.setText(item.get("text", ""))
+            edit.setText(item.get("text", "")
+                         if isinstance(item, dict) else "")
 
 
 class MultiSendPage(QWidget):
-    """send_func(text: str, is_hex: bool) 由主窗口提供，负责实际发送。"""
+    """send_func(text: str, is_hex: bool) 由主窗口提供，负责实际发送。
+
+    标签栏最后固定一个 "+" 页签用于添加标签；右键页签弹出重命名/删除菜单。
+    """
 
     def __init__(self, send_func, parent=None):
         super().__init__(parent)
         self._send_func = send_func
         self._cycle_index = 0
-
-        add_btn = QPushButton("添加标签")
-        add_btn.clicked.connect(self.add_tag)
-        del_btn = QPushButton("删除标签")
-        del_btn.clicked.connect(self.delete_tag)
-        top = QHBoxLayout()
-        top.addWidget(add_btn)
-        top.addWidget(del_btn)
-        top.addStretch()
+        self._prev_index = 0
 
         self.tag_tabs = QTabWidget()
-        self.tag_tabs.currentChanged.connect(lambda _: self.stop_cycle())
-        self.tag_tabs.tabBarDoubleClicked.connect(self.rename_tag)
+        self.tag_tabs.tabBarClicked.connect(self._on_tab_clicked)
+        self.tag_tabs.currentChanged.connect(self._on_current_changed)
+        bar = self.tag_tabs.tabBar()
+        bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._tab_context_menu)
 
         self.cycle_chk = QCheckBox("循环发送(当前标签)")
         self.cycle_chk.toggled.connect(self._toggle_cycle)
@@ -90,7 +91,8 @@ class MultiSendPage(QWidget):
         bottom.addStretch()
 
         layout = QVBoxLayout(self)
-        layout.addLayout(top)
+        layout.setContentsMargins(4, 4, 4, 2)
+        layout.setSpacing(3)
         layout.addWidget(self.tag_tabs)
         layout.addLayout(bottom)
 
@@ -103,41 +105,74 @@ class MultiSendPage(QWidget):
 
     # ---------- 标签管理 ----------
 
+    def _plus_index(self) -> int:
+        return self.tag_tabs.count() - 1
+
+    def _is_plus(self, idx: int) -> bool:
+        return idx == self._plus_index()
+
+    def _on_tab_clicked(self, idx: int):
+        if self._is_plus(idx):
+            self.add_tag()
+
+    def _on_current_changed(self, idx: int):
+        # "+" 页签不可停留，弹回原页；原页已删除则弹回最后一个真实标签
+        if self._is_plus(idx) and self.tag_tabs.count() > 1:
+            target = self._prev_index
+            if not 0 <= target < self._plus_index():
+                target = self._plus_index() - 1
+            self.tag_tabs.setCurrentIndex(target)
+            return
+        self._prev_index = idx
+        self.stop_cycle()
+
+    def _tab_context_menu(self, pos):
+        bar = self.tag_tabs.tabBar()
+        idx = bar.tabAt(pos)
+        if idx < 0 or self._is_plus(idx):
+            return
+        menu = QMenu(self)
+        rename_act = menu.addAction("重命名")
+        delete_act = menu.addAction("删除标签")
+        act = menu.exec(bar.mapToGlobal(pos))
+        if act is rename_act:
+            self.rename_tag(idx)
+        elif act is delete_act:
+            self.delete_tag(idx)
+
+    def _unique_name(self, name: str, skip_idx: int = -1) -> bool:
+        for i in range(self._plus_index()):
+            if i != skip_idx and self.tag_tabs.tabText(i) == name:
+                QMessageBox.warning(self, "提示", f"标签 {name} 已存在")
+                return False
+        return True
+
     def add_tag(self, name: str | None = None):
         if not name:
             name, ok = QInputDialog.getText(self, "添加标签", "标签名称:")
             if not ok or not name.strip():
                 return
             name = name.strip()
-        for i in range(self.tag_tabs.count()):
-            if self.tag_tabs.tabText(i) == name:
-                QMessageBox.warning(self, "提示", f"标签 {name} 已存在")
-                return
+        if not self._unique_name(name):
+            return
         page = TagPage(self._send_entry, self.save)
-        self.tag_tabs.addTab(page, name)
-        self.tag_tabs.setCurrentWidget(page)
+        idx = self.tag_tabs.insertTab(self._plus_index(), page, name)
+        self.tag_tabs.setCurrentIndex(idx)
         self.save()
 
     def rename_tag(self, idx: int):
-        if idx < 0:
-            return
         old = self.tag_tabs.tabText(idx)
         name, ok = QInputDialog.getText(self, "重命名标签", "标签名称:", text=old)
         if not ok or not name.strip() or name.strip() == old:
             return
         name = name.strip()
-        for i in range(self.tag_tabs.count()):
-            if i != idx and self.tag_tabs.tabText(i) == name:
-                QMessageBox.warning(self, "提示", f"标签 {name} 已存在")
-                return
+        if not self._unique_name(name, skip_idx=idx):
+            return
         self.tag_tabs.setTabText(idx, name)
         self.save()
 
-    def delete_tag(self):
-        idx = self.tag_tabs.currentIndex()
-        if idx < 0:
-            return
-        if self.tag_tabs.count() == 1:
+    def delete_tag(self, idx: int):
+        if self.tag_tabs.count() <= 2:  # 一个标签 + "+"
             QMessageBox.warning(self, "提示", "至少保留一个标签")
             return
         name = self.tag_tabs.tabText(idx)
@@ -149,7 +184,8 @@ class MultiSendPage(QWidget):
         self.save()
 
     def _current_page(self) -> TagPage | None:
-        return self.tag_tabs.currentWidget()
+        w = self.tag_tabs.currentWidget()
+        return w if isinstance(w, TagPage) else None
 
     # ---------- 持久化 ----------
 
@@ -166,12 +202,14 @@ class MultiSendPage(QWidget):
             page = TagPage(self._send_entry, self.save)
             page.load_list(items)
             self.tag_tabs.addTab(page, name)
+        self.tag_tabs.addTab(QWidget(), "+")  # 固定在末尾的添加入口
+        self.tag_tabs.setCurrentIndex(0)
 
     def save(self):
         if self._loading:
             return
         data = {self.tag_tabs.tabText(i): self.tag_tabs.widget(i).to_list()
-                for i in range(self.tag_tabs.count())}
+                for i in range(self._plus_index())}
         try:
             CONFIG_PATH.write_text(
                 json.dumps(data, ensure_ascii=False, indent=1),

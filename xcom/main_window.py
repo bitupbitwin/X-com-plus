@@ -7,7 +7,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QCheckBox, QSpinBox,
-    QPlainTextEdit, QMessageBox, QFileDialog,
+    QPlainTextEdit, QMessageBox, QFileDialog, QSplitter,
 )
 
 from .serial_manager import SerialManager, list_ports
@@ -46,11 +46,8 @@ class MainWindow(QMainWindow):
     # ---------- UI 构建 ----------
 
     def _build_ui(self):
-        tabs = QTabWidget()
-        tabs.addTab(self._build_main_page(), "串口数据收发")
         self.multi_page = MultiSendPage(self.send_data)
-        tabs.addTab(self.multi_page, "多条数据发送")
-        self.setCentralWidget(tabs)
+        self.setCentralWidget(self._build_main_page())
 
         self.status_label = QLabel()
         self.count_label = QLabel()
@@ -175,19 +172,29 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(clear_send_btn)
 
         send_layout = QVBoxLayout()
-        send_layout.setContentsMargins(6, 2, 6, 4)
+        send_layout.setContentsMargins(6, 4, 6, 4)
         send_layout.setSpacing(3)
         send_layout.addLayout(input_row)
         send_layout.addLayout(opt_row)
-        send_box = QGroupBox("发送")
-        send_box.setLayout(send_layout)
+        send_layout.addStretch()
+        send_widget = QWidget()
+        send_widget.setLayout(send_layout)
 
-        left = QVBoxLayout()
-        left.addWidget(self.recv_text, 1)
-        left.addWidget(send_box)
+        # 下方页签切换单条/多条发送，接收日志区始终在上方；分割条可拖动调比例
+        self.send_tabs = QTabWidget()
+        self.send_tabs.addTab(send_widget, "单条发送")
+        self.send_tabs.addTab(self.multi_page, "多条发送")
+
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self.recv_text)
+        splitter.addWidget(self.send_tabs)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setCollapsible(0, False)
+        splitter.setSizes([400, 220])
 
         layout = QHBoxLayout()
-        layout.addLayout(left, 1)
+        layout.addWidget(splitter, 1)
         layout.addLayout(right)
         page = QWidget()
         page.setLayout(layout)
