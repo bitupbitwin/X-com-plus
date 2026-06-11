@@ -1,4 +1,4 @@
-"""多条发送：按标签分组，每标签 20 条命令（左右两列），"+"号加标签，右键管理，持久化。"""
+"""多条发送：标签分组，标签内分页（每页 10 条、左右两列），"+"号加标签，右键管理，持久化。"""
 
 from __future__ import annotations
 
@@ -12,19 +12,28 @@ from PySide6.QtWidgets import (
     QInputDialog, QMessageBox, QMenu,
 )
 
-ENTRIES_PER_PAGE = 20
-ROWS_PER_COLUMN = 10
+ENTRIES_PER_PAGE = 10
+ROWS_PER_COLUMN = 5
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "xcom_multisend.json"
 
 
+def _empty_page():
+    return [{"hex": False, "text": ""} for _ in range(ENTRIES_PER_PAGE)]
+
+
 class TagPage(QWidget):
-    """单个标签页：20 条命令，左右两列各 10 条。"""
+    """单个标签：多页命令，每页 10 条（左右两列各 5 条），带页操作栏。"""
 
     def __init__(self, send_entry_func, on_changed, parent=None):
         super().__init__(parent)
-        self.entries = []  # [(hex_chk, line_edit), ...] 共 20 条
+        self._on_changed = on_changed
+        self._loading = False
+        self.pages = [_empty_page()]
+        self.current = 0
+        self.entries = []   # [(hex_chk, line_edit), ...] 当前页 10 条
+        self._send_btns = []
 
-        grid = QGridLayout(self)
+        grid = QGridLayout()
         grid.setContentsMargins(4, 4, 4, 2)
         grid.setVerticalSpacing(2)
         for col in range(2):
@@ -35,32 +44,128 @@ class TagPage(QWidget):
             for row in range(ROWS_PER_COLUMN):
                 idx = col * ROWS_PER_COLUMN + row
                 hex_chk = QCheckBox()
-                hex_chk.toggled.connect(on_changed)
+                hex_chk.toggled.connect(
+                    lambda _=False, i=idx: self._entry_changed(i, save=True))
                 edit = QLineEdit()
-                edit.editingFinished.connect(on_changed)
-                btn = QPushButton(str(idx + 1))
-                btn.setFixedWidth(40)
+                edit.textChanged.connect(
+                    lambda _="", i=idx: self._entry_changed(i))
+                edit.editingFinished.connect(self._on_changed)
+                btn = QPushButton()
+                btn.setFixedWidth(48)
                 btn.clicked.connect(lambda _=False, i=idx: send_entry_func(i))
                 grid.addWidget(hex_chk, row + 1, base_col, alignment=Qt.AlignCenter)
                 grid.addWidget(edit, row + 1, base_col + 1)
                 grid.addWidget(btn, row + 1, base_col + 2)
                 self.entries.append((hex_chk, edit))
+                self._send_btns.append(btn)
             if col == 0:
                 grid.setColumnMinimumWidth(3, 16)  # 两列之间留间隔
         grid.setRowStretch(ROWS_PER_COLUMN + 1, 1)  # 内容顶部对齐
 
-    def to_list(self):
-        return [{"hex": chk.isChecked(), "text": edit.text()}
-                for chk, edit in self.entries]
+        # 页操作栏
+        self.page_label = QLabel()
+        remove_btn = QPushButton("移除此页")
+        remove_btn.clicked.connect(self.remove_page)
+        add_btn = QPushButton("添加页")
+        add_btn.clicked.connect(self.add_page)
+        first_btn = QPushButton("首页")
+        first_btn.clicked.connect(lambda: self.goto_page(0))
+        prev_btn = QPushButton("上一页")
+        prev_btn.clicked.connect(lambda: self.goto_page(self.current - 1))
+        next_btn = QPushButton("下一页")
+        next_btn.clicked.connect(lambda: self.goto_page(self.current + 1))
+        last_btn = QPushButton("尾页")
+        last_btn.clicked.connect(lambda: self.goto_page(len(self.pages) - 1))
+        self.jump_spin = QSpinBox()
+        self.jump_spin.setRange(1, 1)
+        jump_btn = QPushButton("跳转")
+        jump_btn.clicked.connect(
+            lambda: self.goto_page(self.jump_spin.value() - 1))
 
-    def load_list(self, items):
-        if not isinstance(items, list):
-            items = []
-        for (chk, edit), item in zip(self.entries, items):
-            if not isinstance(item, dict):
-                item = {}
+        page_bar = QHBoxLayout()
+        page_bar.addWidget(self.page_label)
+        for w in (remove_btn, add_btn, first_btn, prev_btn, next_btn, last_btn):
+            page_bar.addWidget(w)
+        page_bar.addWidget(QLabel("页码"))
+        page_bar.addWidget(self.jump_spin)
+        page_bar.addWidget(jump_btn)
+        page_bar.addStretch()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(3)
+        layout.addLayout(grid)
+        layout.addLayout(page_bar)
+
+        self._show_page(0)
+
+    # ---------- 页内条目 ----------
+
+    def _entry_changed(self, idx, save=False):
+        if self._loading:
+            return
+        chk, edit = self.entries[idx]
+        self.pages[self.current][idx] = {"hex": chk.isChecked(),
+                                         "text": edit.text()}
+        if save:
+            self._on_changed()
+
+    # ---------- 翻页 ----------
+
+    def _show_page(self, idx: int):
+        idx = max(0, min(idx, len(self.pages) - 1))
+        self.current = idx
+        self._loading = True
+        for i, (chk, edit) in enumerate(self.entries):
+            item = self.pages[idx][i]
             chk.setChecked(bool(item.get("hex")))
             edit.setText(str(item.get("text", "")))
+            self._send_btns[i].setText(str(idx * ENTRIES_PER_PAGE + i + 1))
+        self._loading = False
+        self.page_label.setText(f"页码 {idx + 1}/{len(self.pages)}")
+        self.jump_spin.setMaximum(len(self.pages))
+
+    def goto_page(self, idx: int):
+        self._show_page(idx)
+
+    def add_page(self):
+        self.pages.append(_empty_page())
+        self._show_page(len(self.pages) - 1)
+        self._on_changed()
+
+    def remove_page(self):
+        has_content = any(item["text"] for item in self.pages[self.current])
+        if has_content and QMessageBox.question(
+                self, "移除此页",
+                f"第 {self.current + 1} 页有命令，确认移除？") != QMessageBox.Yes:
+            return
+        if len(self.pages) == 1:
+            self.pages[0] = _empty_page()
+        else:
+            del self.pages[self.current]
+        self._show_page(self.current)
+        self._on_changed()
+
+    # ---------- 数据 ----------
+
+    def to_data(self):
+        return self.pages
+
+    def load_data(self, pages):
+        clean = []
+        for pg in pages if isinstance(pages, list) else []:
+            if not isinstance(pg, list):
+                continue
+            items = []
+            for it in pg[:ENTRIES_PER_PAGE]:
+                it = it if isinstance(it, dict) else {}
+                items.append({"hex": bool(it.get("hex")),
+                              "text": str(it.get("text", ""))})
+            while len(items) < ENTRIES_PER_PAGE:
+                items.append({"hex": False, "text": ""})
+            clean.append(items)
+        self.pages = clean or [_empty_page()]
+        self._show_page(0)
 
 
 class MultiSendPage(QWidget):
@@ -82,7 +187,7 @@ class MultiSendPage(QWidget):
         bar.setContextMenuPolicy(Qt.CustomContextMenu)
         bar.customContextMenuRequested.connect(self._tab_context_menu)
 
-        self.cycle_chk = QCheckBox("循环发送(当前标签)")
+        self.cycle_chk = QCheckBox("循环发送(当前页)")
         self.cycle_chk.toggled.connect(self._toggle_cycle)
         self.period_spin = QSpinBox()
         self.period_spin.setRange(1, 600000)
@@ -201,11 +306,15 @@ class MultiSendPage(QWidget):
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 data = {}
-        if not data:
+        if not isinstance(data, dict) or not data:
             data = {"默认": []}
         for name, items in data.items():
             page = TagPage(self._send_entry, self.save)
-            page.load_list(items)
+            if items and isinstance(items, list) and isinstance(items[0], dict):
+                # 旧格式：扁平条目列表 -> 按每页 10 条切分
+                items = [items[i:i + ENTRIES_PER_PAGE]
+                         for i in range(0, len(items), ENTRIES_PER_PAGE)]
+            page.load_data(items)
             self.tag_tabs.addTab(page, name)
         self.tag_tabs.addTab(QWidget(), "+")  # 固定在末尾的添加入口
         self.tag_tabs.setCurrentIndex(0)
@@ -213,7 +322,7 @@ class MultiSendPage(QWidget):
     def save(self):
         if self._loading:
             return
-        data = {self.tag_tabs.tabText(i): self.tag_tabs.widget(i).to_list()
+        data = {self.tag_tabs.tabText(i): self.tag_tabs.widget(i).to_data()
                 for i in range(self._plus_index())}
         try:
             CONFIG_PATH.write_text(
