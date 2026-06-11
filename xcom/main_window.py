@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
@@ -9,7 +10,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QCheckBox, QSpinBox,
-    QPlainTextEdit, QMessageBox, QFileDialog, QSplitter,
+    QPlainTextEdit, QMessageBox, QFileDialog, QSplitter, QApplication,
 )
 
 from .serial_manager import SerialManager, list_ports
@@ -17,7 +18,9 @@ from .multi_send import MultiSendPage
 
 BAUDRATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
              "115200", "230400", "460800", "921600"]
-RX_BUFFER_LIMIT = 1024 * 1024  # 接收缓冲上限 1MB
+RX_BUFFER_LIMIT = 1024 * 1024       # 接收缓冲上限 1MB
+DISPLAY_CHAR_LIMIT = 8 * 1024 * 1024  # 显示文本超过该字符数时按缓冲重渲染
+FILE_SEND_CHUNK = 64 * 1024
 
 
 def parse_hex(text: str) -> bytes:
@@ -25,7 +28,10 @@ def parse_hex(text: str) -> bytes:
     s = "".join(text.split())
     if len(s) % 2 != 0:
         raise ValueError("16进制数据长度必须为偶数个字符")
-    return bytes.fromhex(s)
+    try:
+        return bytes.fromhex(s)
+    except ValueError:
+        raise ValueError("包含非16进制字符") from None
 
 
 class MainWindow(QMainWindow):
@@ -40,8 +46,10 @@ class MainWindow(QMainWindow):
         self.rx_count = 0
         self.tx_count = 0
         self.display_paused = False
+        self._sending_file = False
 
         self._build_ui()
+        self._reset_decoder()
         self.refresh_ports()
         self._update_status()
 
@@ -64,6 +72,7 @@ class MainWindow(QMainWindow):
         # 接收区
         self.recv_text = QPlainTextEdit()
         self.recv_text.setReadOnly(True)
+        self.recv_text.setMaximumBlockCount(50000)  # 限制显示行数防内存膨胀
         mono = QFont("Consolas")
         mono.setStyleHint(QFont.Monospace)
         self.recv_text.setFont(mono)
@@ -280,14 +289,21 @@ class MainWindow(QMainWindow):
             self.rx_buffer_size -= len(old)
         if not self.display_paused:
             self._append_text(self._format_chunk(now, data))
+            # 无换行数据（如 HEX 显示）不受行数限制约束，超限后整体重渲染
+            if self.recv_text.document().characterCount() > DISPLAY_CHAR_LIMIT:
+                self.rerender_recv()
         self._update_status()
+
+    def _reset_decoder(self):
+        # 增量解码：UTF-8/GBK 多字节字符被分包接收时不会显示成乱码
+        self._decoder = codecs.getincrementaldecoder(
+            self.encoding_combo.currentText())(errors="replace")
 
     def _format_chunk(self, ts: datetime, data: bytes) -> str:
         if self.hex_recv_chk.isChecked():
             body = " ".join(f"{b:02X}" for b in data) + " "
         else:
-            body = data.decode(self.encoding_combo.currentText(),
-                               errors="replace")
+            body = self._decoder.decode(data)
         if self.timestamp_chk.isChecked():
             return f"\n[{ts.strftime('%H:%M:%S.%f')[:-3]}] {body}"
         return body
@@ -299,6 +315,7 @@ class MainWindow(QMainWindow):
         self.recv_text.setTextCursor(cursor)
 
     def rerender_recv(self):
+        self._reset_decoder()
         self.recv_text.setPlainText(
             "".join(self._format_chunk(ts, d) for ts, d in self.rx_chunks))
         self.recv_text.moveCursor(QTextCursor.End)
@@ -311,6 +328,7 @@ class MainWindow(QMainWindow):
     def clear_recv(self):
         self.rx_chunks.clear()
         self.rx_buffer_size = 0
+        self._reset_decoder()
         self.recv_text.clear()
 
     def save_window(self):
@@ -374,17 +392,36 @@ class MainWindow(QMainWindow):
         if not self.sm.is_open:
             QMessageBox.warning(self, "提示", "串口未打开")
             return
+        if self._sending_file:
+            QMessageBox.warning(self, "提示", "正在发送文件")
+            return
         path, _ = QFileDialog.getOpenFileName(self, "发送文件")
         if not path:
             return
         try:
             with open(path, "rb") as f:
                 data = f.read()
-            self.sm.write(data)
-        except Exception as e:
+        except OSError as e:
             QMessageBox.critical(self, "发送文件失败", str(e))
             return
-        self.tx_count += len(data)
+        # 分块发送并处理事件，大文件不卡界面；中途关串口可中止
+        self._sending_file = True
+        total = len(data)
+        try:
+            for i in range(0, total, FILE_SEND_CHUNK):
+                if not self.sm.is_open:
+                    break
+                chunk = data[i:i + FILE_SEND_CHUNK]
+                self.sm.write(chunk)
+                self.tx_count += len(chunk)
+                self.status_label.setText(
+                    f"发送文件 {min(i + FILE_SEND_CHUNK, total)}/{total} 字节")
+                QApplication.processEvents()
+        except Exception as e:
+            self.on_serial_error(str(e))
+            return
+        finally:
+            self._sending_file = False
         self._update_status()
 
     # ---------- 状态栏 ----------
