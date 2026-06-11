@@ -74,6 +74,7 @@ class MultiSendPage(QWidget):
 
         self.tag_tabs = QTabWidget()
         self.tag_tabs.currentChanged.connect(lambda _: self.stop_cycle())
+        self.tag_tabs.tabBarDoubleClicked.connect(self.rename_tag)
 
         self.cycle_chk = QCheckBox("循环发送(当前标签)")
         self.cycle_chk.toggled.connect(self._toggle_cycle)
@@ -115,6 +116,21 @@ class MultiSendPage(QWidget):
         page = TagPage(self._send_entry, self.save)
         self.tag_tabs.addTab(page, name)
         self.tag_tabs.setCurrentWidget(page)
+        self.save()
+
+    def rename_tag(self, idx: int):
+        if idx < 0:
+            return
+        old = self.tag_tabs.tabText(idx)
+        name, ok = QInputDialog.getText(self, "重命名标签", "标签名称:", text=old)
+        if not ok or not name.strip() or name.strip() == old:
+            return
+        name = name.strip()
+        for i in range(self.tag_tabs.count()):
+            if i != idx and self.tag_tabs.tabText(i) == name:
+                QMessageBox.warning(self, "提示", f"标签 {name} 已存在")
+                return
+        self.tag_tabs.setTabText(idx, name)
         self.save()
 
     def delete_tag(self):

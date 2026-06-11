@@ -143,9 +143,9 @@ class MainWindow(QMainWindow):
         right.addWidget(recv_box)
         right.addStretch()
 
-        # 发送区
+        # 发送区：压缩高度，让接收日志区占比更大
         self.send_text = QPlainTextEdit()
-        self.send_text.setFixedHeight(90)
+        self.send_text.setFixedHeight(55)
         self.hex_send_chk = QCheckBox("16进制发送")
         self.newline_chk = QCheckBox("发送新行")
         self.timer_send_chk = QCheckBox("定时发送")
@@ -155,29 +155,30 @@ class MainWindow(QMainWindow):
         self.period_spin.setValue(1000)
         self.period_spin.setSuffix(" ms")
         send_btn = QPushButton("发送")
-        send_btn.setFixedHeight(60)
+        send_btn.setFixedSize(80, 55)
         send_btn.clicked.connect(self.send_current)
         send_file_btn = QPushButton("发送文件")
         send_file_btn.clicked.connect(self.send_file)
         clear_send_btn = QPushButton("清除发送")
         clear_send_btn.clicked.connect(self.send_text.clear)
 
-        send_opts = QVBoxLayout()
-        send_opts.addWidget(self.hex_send_chk)
-        send_opts.addWidget(self.newline_chk)
-        timer_row = QHBoxLayout()
-        timer_row.addWidget(self.timer_send_chk)
-        timer_row.addWidget(self.period_spin)
-        send_opts.addLayout(timer_row)
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(send_file_btn)
-        btn_row.addWidget(clear_send_btn)
-        send_opts.addLayout(btn_row)
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.send_text, 1)
+        input_row.addWidget(send_btn)
 
-        send_layout = QHBoxLayout()
-        send_layout.addWidget(self.send_text, 1)
-        send_layout.addLayout(send_opts)
-        send_layout.addWidget(send_btn)
+        opt_row = QHBoxLayout()
+        for w in (self.hex_send_chk, self.newline_chk, self.timer_send_chk,
+                  self.period_spin):
+            opt_row.addWidget(w)
+        opt_row.addStretch()
+        opt_row.addWidget(send_file_btn)
+        opt_row.addWidget(clear_send_btn)
+
+        send_layout = QVBoxLayout()
+        send_layout.setContentsMargins(6, 2, 6, 4)
+        send_layout.setSpacing(3)
+        send_layout.addLayout(input_row)
+        send_layout.addLayout(opt_row)
         send_box = QGroupBox("发送")
         send_box.setLayout(send_layout)
 
