@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from .serial_manager import SerialManager, list_ports
 from .multi_send import MultiSendPage
+from .theme import Backdrop, apply_theme
 
 BAUDRATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
              "115200", "230400", "460800", "921600"]
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self._sending_file = False
 
         self._build_ui()
+        apply_theme(self)
         self._reset_decoder()
         self.refresh_ports()
         self._update_status()
@@ -97,6 +99,7 @@ class MainWindow(QMainWindow):
         self.encoding_combo.addItems(["UTF-8", "GBK"])
         self.encoding_combo.currentIndexChanged.connect(self.rerender_recv)
         self.open_btn = QPushButton("打开串口")
+        self.open_btn.setObjectName("primary")
         self.open_btn.clicked.connect(self.toggle_port)
 
         grid = QGridLayout()
@@ -163,6 +166,7 @@ class MainWindow(QMainWindow):
         self.period_spin.setValue(1000)
         self.period_spin.setSuffix(" ms")
         send_btn = QPushButton("发送")
+        send_btn.setObjectName("primary")
         send_btn.setFixedSize(80, 55)
         send_btn.clicked.connect(self.send_current)
         send_file_btn = QPushButton("发送文件")
@@ -205,9 +209,10 @@ class MainWindow(QMainWindow):
         splitter.setSizes([400, 220])
 
         layout = QHBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 6)
         layout.addWidget(splitter, 1)
         layout.addLayout(right)
-        page = QWidget()
+        page = Backdrop()
         page.setLayout(layout)
 
         self.send_timer = QTimer(self)
