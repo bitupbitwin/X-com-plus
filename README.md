@@ -27,6 +27,10 @@
 
 需要 Python 3.8+（推荐 3.10+）。
 
+**快捷启动**：Windows 双击 `启动.bat`，Linux/macOS 运行 `./start.sh`（首次会自动安装依赖）。
+
+**手动启动**：
+
 ```bash
 pip install -r requirements.txt
 python run.py
