@@ -75,6 +75,7 @@ class SerialManager:
         ser.stopbits = STOPBITS_MAP[stopbits]
         ser.parity = PARITY_MAP[parity]
         ser.timeout = 0.05
+        ser.write_timeout = 2  # 防止流控阻塞时 write 永久卡死界面
         ser.rtscts = flow == "RTS/CTS"
         ser.xonxoff = flow == "XON/XOFF"
         ser.open()

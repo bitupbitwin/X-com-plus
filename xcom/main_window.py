@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import codecs
+import os
 from datetime import datetime
 
+import serial
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         self.tx_count = 0
         self.display_paused = False
         self._sending_file = False
+        self._tick_busy = False
 
         self._build_ui()
         apply_theme(self)
@@ -314,10 +317,14 @@ class MainWindow(QMainWindow):
         return body
 
     def _append_text(self, text: str):
-        cursor = self.recv_text.textCursor()
+        # 不动用户光标/选区：在文档末尾插入；仅当原本就在底部时才自动跟随滚动
+        sb = self.recv_text.verticalScrollBar()
+        at_bottom = sb.value() >= sb.maximum() - 4
+        cursor = QTextCursor(self.recv_text.document())
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
-        self.recv_text.setTextCursor(cursor)
+        if at_bottom:
+            sb.setValue(sb.maximum())
 
     def rerender_recv(self):
         self._reset_decoder()
@@ -354,6 +361,9 @@ class MainWindow(QMainWindow):
         if not self.sm.is_open:
             QMessageBox.warning(self, "提示", "串口未打开")
             return False
+        if self._sending_file:
+            QMessageBox.warning(self, "提示", "正在发送文件，请稍候")
+            return False
         try:
             if is_hex:
                 data = parse_hex(text)
@@ -365,6 +375,10 @@ class MainWindow(QMainWindow):
             self.sm.write(data)
         except ValueError as e:
             QMessageBox.warning(self, "16进制格式错误", str(e))
+            return False
+        except serial.SerialTimeoutException:
+            QMessageBox.warning(self, "发送超时",
+                                "串口写入超时，可能被流控(CTS)阻塞")
             return False
         except Exception as e:
             self.on_serial_error(str(e))
@@ -389,9 +403,17 @@ class MainWindow(QMainWindow):
             self.send_timer.stop()
 
     def _timer_send_tick(self):
-        self.send_timer.setInterval(self.period_spin.value())
-        if not self.send_current():
-            self.timer_send_chk.setChecked(False)
+        # 重入保护：发送失败弹出的模态对话框会继续跑事件循环，
+        # 期间定时器再触发会导致对话框无限叠加
+        if self._tick_busy:
+            return
+        self._tick_busy = True
+        try:
+            self.send_timer.setInterval(self.period_spin.value())
+            if not self.send_current():
+                self.timer_send_chk.setChecked(False)
+        finally:
+            self._tick_busy = False
 
     def send_file(self):
         if not self.sm.is_open:
@@ -404,27 +426,31 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            with open(path, "rb") as f:
-                data = f.read()
+            total = os.path.getsize(path)
         except OSError as e:
             QMessageBox.critical(self, "发送文件失败", str(e))
             return
-        # 分块发送并处理事件，大文件不卡界面；中途关串口可中止
+        # 流式分块发送并处理事件：大文件不占内存不卡界面；中途关串口可中止
         self._sending_file = True
-        total = len(data)
+        sent = 0
         try:
-            for i in range(0, total, FILE_SEND_CHUNK):
-                if not self.sm.is_open:
-                    break
-                chunk = data[i:i + FILE_SEND_CHUNK]
-                self.sm.write(chunk)
-                self.tx_count += len(chunk)
-                self.status_label.setText(
-                    f"发送文件 {min(i + FILE_SEND_CHUNK, total)}/{total} 字节")
-                QApplication.processEvents()
-        except Exception as e:
+            with open(path, "rb") as f:
+                while self.sm.is_open:
+                    chunk = f.read(FILE_SEND_CHUNK)
+                    if not chunk:
+                        break
+                    self.sm.write(chunk)
+                    sent += len(chunk)
+                    self.tx_count += len(chunk)
+                    self.status_label.setText(f"发送文件 {sent}/{total} 字节")
+                    QApplication.processEvents()
+        except serial.SerialTimeoutException:
+            QMessageBox.warning(self, "发送超时",
+                                "串口写入超时，文件发送已中止")
+        except serial.SerialException as e:
             self.on_serial_error(str(e))
-            return
+        except OSError as e:
+            QMessageBox.critical(self, "发送文件失败", str(e))
         finally:
             self._sending_file = False
         self._update_status()

@@ -169,9 +169,10 @@ class TagPage(QWidget):
 
 
 class MultiSendPage(QWidget):
-    """send_func(text: str, is_hex: bool) 由主窗口提供，负责实际发送。
+    """send_func(text, is_hex, newline) 由主窗口提供，负责实际发送。
 
-    标签栏最后固定一个 "+" 页签用于添加标签；右键页签弹出重命名/删除菜单。
+    标签栏最后固定一个 "+" 页签用于添加标签；
+    右键页签弹出重命名/删除菜单，双击页签直接重命名。
     """
 
     def __init__(self, send_func, parent=None):
@@ -179,14 +180,18 @@ class MultiSendPage(QWidget):
         self._send_func = send_func
         self._cycle_index = 0
         self._prev_index = 0
+        self._tick_busy = False
 
         self.tag_tabs = QTabWidget()
         self.tag_tabs.tabBarClicked.connect(self._on_tab_clicked)
+        self.tag_tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         self.tag_tabs.currentChanged.connect(self._on_current_changed)
         bar = self.tag_tabs.tabBar()
         bar.setContextMenuPolicy(Qt.CustomContextMenu)
         bar.customContextMenuRequested.connect(self._tab_context_menu)
 
+        self.newline_chk = QCheckBox("发送新行")
+        self.newline_chk.setChecked(True)
         self.cycle_chk = QCheckBox("循环发送(当前页)")
         self.cycle_chk.toggled.connect(self._toggle_cycle)
         self.period_spin = QSpinBox()
@@ -195,6 +200,7 @@ class MultiSendPage(QWidget):
         self.period_spin.setSuffix(" ms")
 
         bottom = QHBoxLayout()
+        bottom.addWidget(self.newline_chk)
         bottom.addWidget(self.cycle_chk)
         bottom.addWidget(QLabel("周期:"))
         bottom.addWidget(self.period_spin)
@@ -225,6 +231,10 @@ class MultiSendPage(QWidget):
         if self._is_plus(idx):
             self.add_tag()
 
+    def _on_tab_double_clicked(self, idx: int):
+        if idx >= 0 and not self._is_plus(idx):
+            self.rename_tag(idx)
+
     def _on_current_changed(self, idx: int):
         # "+" 页签不可停留，弹回原页；原页已删除则弹回最后一个真实标签
         if self._is_plus(idx) and self.tag_tabs.count() > 1:
@@ -251,6 +261,9 @@ class MultiSendPage(QWidget):
             self.delete_tag(idx)
 
     def _unique_name(self, name: str, skip_idx: int = -1) -> bool:
+        if name == "+":
+            QMessageBox.warning(self, "提示", '标签名不能为 "+"')
+            return False
         for i in range(self._plus_index()):
             if i != skip_idx and self.tag_tabs.tabText(i) == name:
                 QMessageBox.warning(self, "提示", f"标签 {name} 已存在")
@@ -341,7 +354,8 @@ class MultiSendPage(QWidget):
         text = edit.text()
         if not text:
             return False
-        return self._send_func(text, hex_chk.isChecked())
+        return self._send_func(text, hex_chk.isChecked(),
+                               self.newline_chk.isChecked())
 
     def _toggle_cycle(self, on: bool):
         if on:
@@ -351,20 +365,28 @@ class MultiSendPage(QWidget):
             self._timer.stop()
 
     def _cycle_tick(self):
-        self._timer.setInterval(self.period_spin.value())
-        page = self._current_page()
-        if page is None:
-            self.cycle_chk.setChecked(False)
+        # 重入保护：发送失败弹出的模态对话框会继续跑事件循环，
+        # 期间定时器再触发会导致对话框无限叠加
+        if self._tick_busy:
             return
-        # 从当前位置往后找第一条非空条目发送
-        for _ in range(ENTRIES_PER_PAGE):
-            idx = self._cycle_index
-            self._cycle_index = (self._cycle_index + 1) % ENTRIES_PER_PAGE
-            if page.entries[idx][1].text():
-                if not self._send_entry(idx):
-                    self.cycle_chk.setChecked(False)
+        self._tick_busy = True
+        try:
+            self._timer.setInterval(self.period_spin.value())
+            page = self._current_page()
+            if page is None:
+                self.cycle_chk.setChecked(False)
                 return
-        self.cycle_chk.setChecked(False)  # 全空则停止
+            # 从当前位置往后找第一条非空条目发送
+            for _ in range(ENTRIES_PER_PAGE):
+                idx = self._cycle_index
+                self._cycle_index = (self._cycle_index + 1) % ENTRIES_PER_PAGE
+                if page.entries[idx][1].text():
+                    if not self._send_entry(idx):
+                        self.cycle_chk.setChecked(False)
+                    return
+            self.cycle_chk.setChecked(False)  # 全空则停止
+        finally:
+            self._tick_busy = False
 
     def stop_cycle(self):
         self.cycle_chk.setChecked(False)
