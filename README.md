@@ -1,3 +1,5 @@
+<img src="assets/logo.png" width="72" align="left" alt="logo"/>
+
 # X-COM+ 串口调试助手
 
 复刻 XCOM 的跨平台串口调试工具（Python + PySide6 + pyserial），自用向，只保留与串口收发直接相关的功能。

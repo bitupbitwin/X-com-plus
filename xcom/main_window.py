@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QMessageBox, QFileDialog, QSplitter, QApplication,
 )
 
+from .icon import app_icon
 from .serial_manager import SerialManager, list_ports
 from .multi_send import MultiSendPage
 from .theme import Backdrop, apply_theme
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("X-COM+ 串口调试助手")
+        self.setWindowIcon(app_icon())  # 弹窗继承主窗口图标
         self.resize(960, 640)
 
         self.sm = SerialManager()

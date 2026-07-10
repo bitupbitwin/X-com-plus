@@ -29,10 +29,18 @@ def main():
                  f"当前为 {sys.version.split()[0]}")
     sys.excepthook = _excepthook
 
+    if sys.platform == "win32":
+        # 让 Windows 任务栏使用我们的图标而不是 python 的
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "xcomplus.serial.debugger")
+
     from PySide6.QtWidgets import QApplication
+    from xcom.icon import app_icon
     from xcom.main_window import MainWindow
 
     app = QApplication(sys.argv)
+    app.setWindowIcon(app_icon())  # 主窗口与全部弹窗的标题栏图标
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
