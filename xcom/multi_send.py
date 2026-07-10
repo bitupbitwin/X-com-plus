@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 
@@ -503,40 +502,67 @@ class EntryEditorDialog(QDialog):
         n = max(self.table.rowCount(), ENTRIES_PER_PAGE)
         self._fill([_empty_item() for _ in range(n)])
 
+    @staticmethod
+    def _cellval(v):
+        return "" if v is None else str(v)
+
     def _import(self):
+        try:
+            import openpyxl
+        except ImportError:
+            QMessageBox.critical(self, "导入失败",
+                                 "缺少 openpyxl 库，请先安装：pip install openpyxl")
+            return
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入条目", "", "CSV 文件 (*.csv);;所有文件 (*)")
+            self, "导入条目", "", "Excel 文件 (*.xlsx);;所有文件 (*)")
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8-sig", newline="") as f:
-                rows = list(csv.reader(f))
-        except OSError as e:
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
+            wb.close()
+        except Exception as e:
             QMessageBox.critical(self, "导入失败", str(e))
             return
         items = []
         for row in rows:
-            if not row:
+            if not row or all(c is None for c in row):
                 continue
-            if row[0].strip().upper() in ("HEX", "16进制"):  # 跳过表头
+            c0 = self._cellval(row[0]).strip()
+            if c0.upper() in ("HEX", "16进制"):  # 跳过表头
                 continue
-            hexf = row[0].strip() in ("1", "true", "True", "是", "Y", "y")
-            items.append({"hex": hexf,
-                          "text": row[1] if len(row) > 1 else "",
-                          "desc": row[2] if len(row) > 2 else ""})
+            hexf = c0 in ("1", "1.0", "true", "True", "是", "Y", "y", "√")
+            items.append({
+                "hex": hexf,
+                "text": self._cellval(row[1]) if len(row) > 1 else "",
+                "desc": self._cellval(row[2]) if len(row) > 2 else "",
+            })
         if items:
             self._fill(items)
 
     def _export(self):
+        try:
+            import openpyxl
+        except ImportError:
+            QMessageBox.critical(self, "导出失败",
+                                 "缺少 openpyxl 库，请先安装：pip install openpyxl")
+            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出条目", "xcom_entries.csv", "CSV 文件 (*.csv)")
+            self, "导出条目", "xcom_entries.xlsx", "Excel 文件 (*.xlsx)")
         if not path:
             return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
         try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(self.HEADERS)
-                for it in self.result_items():
-                    w.writerow([1 if it["hex"] else 0, it["text"], it["desc"]])
-        except OSError as e:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "条目"
+            ws.append(self.HEADERS)
+            for it in self.result_items():
+                ws.append([1 if it["hex"] else 0, it["text"], it["desc"]])
+            ws.column_dimensions["B"].width = 40
+            ws.column_dimensions["C"].width = 24
+            wb.save(path)
+        except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
