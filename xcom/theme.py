@@ -132,11 +132,11 @@ QSpinBox::up-button:hover, QSpinBox::down-button:hover {
 QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
     background: rgba(255,149,0,180);
 }
-QSpinBox::up-arrow { image: url(@UP@); width: 12px; height: 12px; }
-QSpinBox::down-arrow { image: url(@DOWN@); width: 12px; height: 12px; }
+QSpinBox::up-arrow { image: url("@UP@"); width: 12px; height: 12px; }
+QSpinBox::down-arrow { image: url("@DOWN@"); width: 12px; height: 12px; }
 
 QComboBox::drop-down { border: none; width: 22px; }
-QComboBox::down-arrow { image: url(@DOWN@); width: 12px; height: 12px; }
+QComboBox::down-arrow { image: url("@DOWN@"); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: #23262E;
     border: 1px solid rgba(255,255,255,40);

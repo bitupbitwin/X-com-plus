@@ -507,6 +507,8 @@ class MainWindow(QMainWindow):
                         self.progress.setValue(int(sent * 100 / total))
                     self.status_label.setText(f"发送文件 {sent}/{total} 字节")
                     QApplication.processEvents()
+            if sent >= total and not self._file_stop:
+                self.progress.setValue(100)  # 完整发完（含空文件）进度置满
         except serial.SerialTimeoutException:
             QMessageBox.warning(self, "发送超时",
                                 "串口写入超时，文件发送已中止")

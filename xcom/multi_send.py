@@ -130,6 +130,7 @@ class TagPage(QWidget):
             item = self.pages[idx][i]
             chk.setChecked(bool(item.get("hex")))
             edit.setText(str(item.get("text", "")))
+            edit.setToolTip(str(item.get("desc", "")))  # 描述作悬停提示
             self._send_btns[i].setText(str(idx * ENTRIES_PER_PAGE + i + 1))
         self._loading = False
         self.page_label.setText(f"页码 {idx + 1}/{len(self.pages)}")
@@ -447,6 +448,10 @@ class EntryEditorDialog(QDialog):
 
         clear_btn = QPushButton("清空")
         clear_btn.clicked.connect(self._clear)
+        add_row_btn = QPushButton("添加行")
+        add_row_btn.clicked.connect(self._add_row)
+        del_row_btn = QPushButton("删除行")
+        del_row_btn.clicked.connect(self._del_rows)
         import_btn = QPushButton("导入条目")
         import_btn.clicked.connect(self._import)
         export_btn = QPushButton("导出条目")
@@ -459,6 +464,8 @@ class EntryEditorDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(clear_btn)
+        btn_row.addWidget(add_row_btn)
+        btn_row.addWidget(del_row_btn)
         btn_row.addWidget(import_btn)
         btn_row.addWidget(export_btn)
         btn_row.addStretch()
@@ -503,6 +510,23 @@ class EntryEditorDialog(QDialog):
         n = max(self.table.rowCount(), ENTRIES_PER_PAGE)
         self._fill([_empty_item() for _ in range(n)])
 
+    def _add_row(self):
+        items = self.result_items()
+        items.append(_empty_item())
+        self._fill(items)
+        self.table.scrollToBottom()
+
+    def _del_rows(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()},
+                      reverse=True)
+        if not rows:
+            QMessageBox.warning(self, "提示", "请先选中要删除的行")
+            return
+        items = self.result_items()
+        for r in rows:
+            del items[r]
+        self._fill(items or [_empty_item()])
+
     def _import(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "导入条目", "", "INI 文件 (*.ini);;所有文件 (*)")
@@ -524,8 +548,10 @@ class EntryEditorDialog(QDialog):
         items = []
         for sec in sorted(parser.sections(), key=_order):
             s = parser[sec]
+            # 手动解析 hex：getboolean 遇到非法值会抛异常
+            hexv = s.get("hex", "0").strip().lower()
             items.append({
-                "hex": s.getboolean("hex", fallback=False),
+                "hex": hexv in ("1", "true", "yes", "on", "是", "√"),
                 "text": s.get("text", ""),
                 "desc": s.get("desc", ""),
             })
