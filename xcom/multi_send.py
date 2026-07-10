@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 from pathlib import Path
 
@@ -502,67 +503,53 @@ class EntryEditorDialog(QDialog):
         n = max(self.table.rowCount(), ENTRIES_PER_PAGE)
         self._fill([_empty_item() for _ in range(n)])
 
-    @staticmethod
-    def _cellval(v):
-        return "" if v is None else str(v)
-
     def _import(self):
-        try:
-            import openpyxl
-        except ImportError:
-            QMessageBox.critical(self, "导入失败",
-                                 "缺少 openpyxl 库，请先安装：pip install openpyxl")
-            return
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入条目", "", "Excel 文件 (*.xlsx);;所有文件 (*)")
+            self, "导入条目", "", "INI 文件 (*.ini);;所有文件 (*)")
         if not path:
             return
+        # interpolation=None：命令里的 % 不被当作插值符
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str  # 保留键名大小写
         try:
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))
-            wb.close()
-        except Exception as e:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                parser.read_file(f)
+        except (OSError, configparser.Error) as e:
             QMessageBox.critical(self, "导入失败", str(e))
             return
+        # section 名形如 [item1] [item2]...，按编号排序读取
+        def _order(name):
+            digits = "".join(c for c in name if c.isdigit())
+            return int(digits) if digits else 0
         items = []
-        for row in rows:
-            if not row or all(c is None for c in row):
-                continue
-            c0 = self._cellval(row[0]).strip()
-            if c0.upper() in ("HEX", "16进制"):  # 跳过表头
-                continue
-            hexf = c0 in ("1", "1.0", "true", "True", "是", "Y", "y", "√")
+        for sec in sorted(parser.sections(), key=_order):
+            s = parser[sec]
             items.append({
-                "hex": hexf,
-                "text": self._cellval(row[1]) if len(row) > 1 else "",
-                "desc": self._cellval(row[2]) if len(row) > 2 else "",
+                "hex": s.getboolean("hex", fallback=False),
+                "text": s.get("text", ""),
+                "desc": s.get("desc", ""),
             })
         if items:
             self._fill(items)
 
     def _export(self):
-        try:
-            import openpyxl
-        except ImportError:
-            QMessageBox.critical(self, "导出失败",
-                                 "缺少 openpyxl 库，请先安装：pip install openpyxl")
-            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出条目", "xcom_entries.xlsx", "Excel 文件 (*.xlsx)")
+            self, "导出条目", "xcom_entries.ini", "INI 文件 (*.ini)")
         if not path:
             return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
+        if not path.lower().endswith(".ini"):
+            path += ".ini"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        for i, it in enumerate(self.result_items(), 1):
+            sec = f"item{i}"
+            parser[sec] = {
+                "hex": "1" if it["hex"] else "0",
+                "text": it["text"],
+                "desc": it["desc"],
+            }
         try:
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "条目"
-            ws.append(self.HEADERS)
-            for it in self.result_items():
-                ws.append([1 if it["hex"] else 0, it["text"], it["desc"]])
-            ws.column_dimensions["B"].width = 40
-            ws.column_dimensions["C"].width = 24
-            wb.save(path)
-        except Exception as e:
+            with open(path, "w", encoding="utf-8-sig") as f:
+                parser.write(f)
+        except OSError as e:
             QMessageBox.critical(self, "导出失败", str(e))
