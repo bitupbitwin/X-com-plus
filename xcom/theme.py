@@ -197,6 +197,19 @@ QTabBar::tab:selected {
 }
 QTabBar::tab:hover:!selected { background: rgba(255,255,255,24); color: #E8E8EC; }
 
+QProgressBar {
+    background: rgba(255,255,255,18);
+    border: 1px solid rgba(255,255,255,32);
+    border-radius: 8px;
+    text-align: center;
+    color: #F2F2F5;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    border-radius: 7px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFAA33, stop:1 #FF8A00);
+}
+
 QStatusBar { background: transparent; color: #9A9AA2; }
 QStatusBar QLabel { color: #9A9AA2; }
 QStatusBar::item { border: none; }

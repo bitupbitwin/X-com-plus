@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QCheckBox, QSpinBox,
     QPlainTextEdit, QMessageBox, QFileDialog, QSplitter, QApplication,
+    QLineEdit, QProgressBar,
 )
 
 from .icon import app_icon
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         self.tx_count = 0
         self.display_paused = False
         self._sending_file = False
+        self._file_stop = False
         self._tick_busy = False
 
         self._build_ui()
@@ -68,12 +70,19 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel()
         self.count_label = QLabel()
+        self.clock_label = QLabel()
         reset_btn = QPushButton("复位计数")
         reset_btn.clicked.connect(self.reset_counts)
         sb = self.statusBar()
         sb.addWidget(self.status_label, 1)
         sb.addPermanentWidget(self.count_label)
+        sb.addPermanentWidget(self.clock_label)
         sb.addPermanentWidget(reset_btn)
+
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.start(1000)
+        self._update_clock()
 
     def _build_main_page(self) -> QWidget:
         # 接收区
@@ -121,7 +130,8 @@ class MainWindow(QMainWindow):
             grid.addWidget(QLabel(name), r, 0)
             grid.addWidget(w, r, 1)
         grid.addWidget(refresh_btn, 0, 2)
-        grid.addWidget(self.open_btn, len(rows), 0, 1, 3)
+        grid.addWidget(QLabel("串口操作"), len(rows), 0)
+        grid.addWidget(self.open_btn, len(rows), 1, 1, 2)
 
         self.dtr_chk = QCheckBox("DTR")
         self.dtr_chk.toggled.connect(lambda on: self.sm.set_dtr(on))
@@ -148,9 +158,12 @@ class MainWindow(QMainWindow):
         clear_recv_btn.clicked.connect(self.clear_recv)
 
         recv_ctrl = QVBoxLayout()
-        for w in (self.hex_recv_chk, self.timestamp_chk, self.pause_chk,
-                  save_btn, clear_recv_btn):
+        for w in (self.hex_recv_chk, self.timestamp_chk, self.pause_chk):
             recv_ctrl.addWidget(w)
+        recv_btn_row = QHBoxLayout()
+        recv_btn_row.addWidget(save_btn)
+        recv_btn_row.addWidget(clear_recv_btn)
+        recv_ctrl.addLayout(recv_btn_row)
         recv_box = QGroupBox("接收设置")
         recv_box.setLayout(recv_ctrl)
 
@@ -175,27 +188,47 @@ class MainWindow(QMainWindow):
         send_btn.setObjectName("primary")
         send_btn.setFixedSize(80, 55)
         send_btn.clicked.connect(self.send_current)
-        send_file_btn = QPushButton("发送文件")
-        send_file_btn.clicked.connect(self.send_file)
         clear_send_btn = QPushButton("清除发送")
         clear_send_btn.clicked.connect(self.send_text.clear)
+
+        # 文件发送行（仿 XCOM：路径框 + 打开文件/发送文件/停止发送）
+        self.file_edit = QLineEdit()
+        self.file_edit.setPlaceholderText("要发送的文件")
+        open_file_btn = QPushButton("打开文件")
+        open_file_btn.clicked.connect(self.open_file)
+        send_file_btn = QPushButton("发送文件")
+        send_file_btn.clicked.connect(self.send_file)
+        stop_send_btn = QPushButton("停止发送")
+        stop_send_btn.clicked.connect(self.stop_send)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(16)
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.send_text, 1)
         input_row.addWidget(send_btn)
 
+        file_row = QHBoxLayout()
+        file_row.addWidget(self.timer_send_chk)
+        file_row.addWidget(self.period_spin)
+        file_row.addWidget(self.file_edit, 1)
+        file_row.addWidget(open_file_btn)
+        file_row.addWidget(send_file_btn)
+        file_row.addWidget(stop_send_btn)
+
         opt_row = QHBoxLayout()
-        for w in (self.hex_send_chk, self.newline_chk, self.timer_send_chk,
-                  self.period_spin):
-            opt_row.addWidget(w)
-        opt_row.addStretch()
-        opt_row.addWidget(send_file_btn)
+        opt_row.addWidget(self.hex_send_chk)
+        opt_row.addWidget(self.newline_chk)
+        opt_row.addWidget(self.progress, 1)
         opt_row.addWidget(clear_send_btn)
 
         send_layout = QVBoxLayout()
         send_layout.setContentsMargins(6, 4, 6, 4)
         send_layout.setSpacing(3)
         send_layout.addLayout(input_row)
+        send_layout.addLayout(file_row)
         send_layout.addLayout(opt_row)
         send_layout.addStretch()
         send_widget = QWidget()
@@ -418,6 +451,15 @@ class MainWindow(QMainWindow):
         finally:
             self._tick_busy = False
 
+    def open_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "打开文件")
+        if path:
+            self.file_edit.setText(path)
+
+    def stop_send(self):
+        self._file_stop = True
+        self.timer_send_chk.setChecked(False)
+
     def send_file(self):
         if not self.sm.is_open:
             QMessageBox.warning(self, "提示", "串口未打开")
@@ -425,26 +467,34 @@ class MainWindow(QMainWindow):
         if self._sending_file:
             QMessageBox.warning(self, "提示", "正在发送文件")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "发送文件")
+        path = self.file_edit.text().strip()
         if not path:
-            return
+            self.open_file()
+            path = self.file_edit.text().strip()
+            if not path:
+                return
         try:
             total = os.path.getsize(path)
         except OSError as e:
             QMessageBox.critical(self, "发送文件失败", str(e))
             return
-        # 流式分块发送并处理事件：大文件不占内存不卡界面；中途关串口可中止
+        # 流式分块发送并处理事件：大文件不占内存不卡界面；
+        # 停止发送/关串口可中止，进度条实时刷新
         self._sending_file = True
+        self._file_stop = False
+        self.progress.setValue(0)
         sent = 0
         try:
             with open(path, "rb") as f:
-                while self.sm.is_open:
+                while self.sm.is_open and not self._file_stop:
                     chunk = f.read(FILE_SEND_CHUNK)
                     if not chunk:
                         break
                     self.sm.write(chunk)
                     sent += len(chunk)
                     self.tx_count += len(chunk)
+                    if total:
+                        self.progress.setValue(int(sent * 100 / total))
                     self.status_label.setText(f"发送文件 {sent}/{total} 字节")
                     QApplication.processEvents()
         except serial.SerialTimeoutException:
@@ -459,6 +509,10 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     # ---------- 状态栏 ----------
+
+    def _update_clock(self):
+        self.clock_label.setText(
+            datetime.now().strftime("当前时间 %H:%M:%S  "))
 
     def reset_counts(self):
         self.rx_count = 0
