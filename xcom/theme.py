@@ -1,10 +1,36 @@
 """毛玻璃深色主题：深色渐变底 + 橙色光晕背景，半透明圆角玻璃面板，苹果系统橙点缀。"""
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPalette, QRadialGradient
+import tempfile
+from pathlib import Path
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import (QColor, QPainter, QPalette, QPen, QPixmap,
+                           QPolygonF, QRadialGradient)
 from PySide6.QtWidgets import QApplication, QWidget
 
 ACCENT = "#FF9500"  # Apple 经典系统橙
+
+
+def _arrow_urls():
+    """生成 QSpinBox/QComboBox 用的上下箭头图片（QSS 自定义样式后 Qt 不再画默认箭头）。"""
+    d = Path(tempfile.gettempdir())
+    paths = {}
+    for name, pts in (
+        ("up", [(2.5, 7.5), (6.0, 4.0), (9.5, 7.5)]),
+        ("down", [(2.5, 4.5), (6.0, 8.0), (9.5, 4.5)]),
+    ):
+        pm = QPixmap(12, 12)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor("#E9E9EE"), 1.7, Qt.SolidLine,
+                      Qt.RoundCap, Qt.RoundJoin))
+        p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in pts]))
+        p.end()
+        path = d / f"xcom_arrow_{name}.png"
+        pm.save(str(path))
+        paths[name] = path.as_posix()
+    return paths["up"], paths["down"]
 
 
 class Backdrop(QWidget):
@@ -83,7 +109,34 @@ QLineEdit, QComboBox, QSpinBox {
     selection-color: #141414;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid #FF9500; }
-QComboBox::drop-down { border: none; width: 20px; }
+
+QSpinBox { padding-right: 22px; }
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 19px;
+    background: rgba(255,255,255,18);
+    border-left: 1px solid rgba(255,255,255,36);
+}
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 7px;
+    border-bottom: 1px solid rgba(255,255,255,20);
+}
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 7px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background: rgba(255,149,0,110);
+}
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+    background: rgba(255,149,0,180);
+}
+QSpinBox::up-arrow { image: url(@UP@); width: 12px; height: 12px; }
+QSpinBox::down-arrow { image: url(@DOWN@); width: 12px; height: 12px; }
+
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox::down-arrow { image: url(@DOWN@); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: #23262E;
     border: 1px solid rgba(255,255,255,40);
@@ -189,4 +242,5 @@ def apply_theme(window):
     app = QApplication.instance()
     app.setStyle("Fusion")
     app.setPalette(_palette())
-    window.setStyleSheet(QSS)
+    up, down = _arrow_urls()
+    window.setStyleSheet(QSS.replace("@UP@", up).replace("@DOWN@", down))
