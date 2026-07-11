@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 xcom_multisend.json
 xcom_error.log
+xcom_entries.ini
 build/
 dist/
 *.spec
