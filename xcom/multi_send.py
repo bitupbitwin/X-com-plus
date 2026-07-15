@@ -17,6 +17,7 @@ from .paths import app_dir
 
 ENTRIES_PER_PAGE = 10
 ROWS_PER_COLUMN = 5
+ENTRY_BUTTON_WIDTH = 36  # 最多容纳 3 位序号，把水平空间优先留给命令内容
 CONFIG_PATH = app_dir() / "xcom_multisend.json"
 
 
@@ -31,9 +32,10 @@ def _empty_page():
 class TagPage(QWidget):
     """单个标签：多页命令，每页 10 条（左右两列各 5 条），带页操作栏。"""
 
-    def __init__(self, send_entry_func, on_changed, parent=None):
+    def __init__(self, send_entry_func, on_changed, tag_name="", parent=None):
         super().__init__(parent)
         self._on_changed = on_changed
+        self.tag_name = tag_name
         self._loading = False
         self.pages = [_empty_page()]
         self.current = 0
@@ -41,7 +43,8 @@ class TagPage(QWidget):
         self._send_btns = []
 
         grid = QGridLayout()
-        grid.setContentsMargins(4, 4, 4, 2)
+        grid.setContentsMargins(2, 2, 2, 1)
+        grid.setHorizontalSpacing(3)
         grid.setVerticalSpacing(2)
         for col in range(2):
             base_col = col * 4
@@ -55,10 +58,10 @@ class TagPage(QWidget):
                     lambda _=False, i=idx: self._entry_changed(i, save=True))
                 edit = QLineEdit()
                 edit.textChanged.connect(
-                    lambda _="", i=idx: self._entry_changed(i))
+                    lambda _="", i=idx: self._entry_changed(i, save=True))
                 edit.editingFinished.connect(self._on_changed)
                 btn = QPushButton()
-                btn.setFixedWidth(48)
+                btn.setFixedWidth(ENTRY_BUTTON_WIDTH)
                 btn.clicked.connect(lambda _=False, i=idx: send_entry_func(i))
                 grid.addWidget(hex_chk, row + 1, base_col, alignment=Qt.AlignCenter)
                 grid.addWidget(edit, row + 1, base_col + 1)
@@ -66,7 +69,7 @@ class TagPage(QWidget):
                 self.entries.append((hex_chk, edit))
                 self._send_btns.append(btn)
             if col == 0:
-                grid.setColumnMinimumWidth(3, 16)  # 两列之间留间隔
+                grid.setColumnMinimumWidth(3, 8)  # 两列之间仅保留必要间隔
         grid.setRowStretch(ROWS_PER_COLUMN + 1, 1)  # 内容顶部对齐
 
         # 页操作栏
@@ -92,6 +95,7 @@ class TagPage(QWidget):
         edit_btn.clicked.connect(self.edit_entries)
 
         page_bar = QHBoxLayout()
+        page_bar.setSpacing(3)
         page_bar.addWidget(self.page_label)
         for w in (remove_btn, add_btn, first_btn, prev_btn, next_btn, last_btn):
             page_bar.addWidget(w)
@@ -194,7 +198,7 @@ class TagPage(QWidget):
         self._show_page(min(self.current, len(self.pages) - 1))
 
     def edit_entries(self):
-        dlg = EntryEditorDialog(self.all_items(), self)
+        dlg = EntryEditorDialog(self.tag_name, self.all_items(), self)
         if dlg.exec() == QDialog.Accepted:
             self.set_all_items(dlg.result_items())
             self._on_changed()
@@ -219,6 +223,8 @@ class MultiSendPage(QWidget):
         self.tag_tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         self.tag_tabs.currentChanged.connect(self._on_current_changed)
         bar = self.tag_tabs.tabBar()
+        bar.setExpanding(False)
+        bar.setUsesScrollButtons(True)
         bar.setContextMenuPolicy(Qt.CustomContextMenu)
         bar.customContextMenuRequested.connect(self._tab_context_menu)
 
@@ -236,6 +242,8 @@ class MultiSendPage(QWidget):
         period_row.addWidget(QLabel("周期:"))
         period_row.addWidget(self.period_spin, 1)
         ctrl = QVBoxLayout()
+        ctrl.setContentsMargins(2, 2, 2, 2)
+        ctrl.setSpacing(2)
         ctrl.addWidget(self.newline_chk)
         ctrl.addWidget(self.cycle_chk)
         ctrl.addLayout(period_row)
@@ -249,6 +257,10 @@ class MultiSendPage(QWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._cycle_tick)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(300)
+        self._save_timer.timeout.connect(self.save)
 
         self._loading = True
         self._load()
@@ -313,7 +325,7 @@ class MultiSendPage(QWidget):
             name = name.strip()
         if not self._unique_name(name):
             return
-        page = TagPage(self._send_entry, self.save)
+        page = TagPage(self._send_entry, self.schedule_save, name)
         idx = self.tag_tabs.insertTab(self._plus_index(), page, name)
         self.tag_tabs.setCurrentIndex(idx)
         self.save()
@@ -327,6 +339,9 @@ class MultiSendPage(QWidget):
         if not self._unique_name(name, skip_idx=idx):
             return
         self.tag_tabs.setTabText(idx, name)
+        page = self.tag_tabs.widget(idx)
+        if isinstance(page, TagPage):
+            page.tag_name = name
         self.save()
 
     def delete_tag(self, idx: int):
@@ -357,7 +372,7 @@ class MultiSendPage(QWidget):
         if not isinstance(data, dict) or not data:
             data = {"默认": []}
         for name, items in data.items():
-            page = TagPage(self._send_entry, self.save)
+            page = TagPage(self._send_entry, self.schedule_save, name)
             if items and isinstance(items, list) and isinstance(items[0], dict):
                 # 旧格式：扁平条目列表 -> 按每页 10 条切分
                 items = [items[i:i + ENTRIES_PER_PAGE]
@@ -367,17 +382,27 @@ class MultiSendPage(QWidget):
         self.tag_tabs.addTab(QWidget(), "+")  # 固定在末尾的添加入口
         self.tag_tabs.setCurrentIndex(0)
 
+    def schedule_save(self, *_):
+        """编辑停止 300ms 后保存，输入过程中也不会因异常退出而丢失。"""
+        if not self._loading:
+            self._save_timer.start()
+
     def save(self):
         if self._loading:
             return
         data = {self.tag_tabs.tabText(i): self.tag_tabs.widget(i).to_data()
                 for i in range(self._plus_index())}
+        temp_path = CONFIG_PATH.with_suffix(".json.tmp")
         try:
-            CONFIG_PATH.write_text(
+            temp_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=1),
                 encoding="utf-8")
+            temp_path.replace(CONFIG_PATH)
         except OSError:
-            pass
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ---------- 发送 ----------
 
@@ -428,23 +453,31 @@ class MultiSendPage(QWidget):
 
 
 class EntryEditorDialog(QDialog):
-    """编辑条目：表格批量编辑当前标签的全部命令，支持清空/导入/导出。"""
+    """按标签和页码批量编辑命令，支持中文 INI 格式导入/导出。"""
 
-    HEADERS = ["HEX", "指令", "描述"]
+    HEADERS = ["页码", "序号", "选择", "指令", "描述"]
 
-    def __init__(self, items, parent=None):
+    def __init__(self, tag_name, items, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("编辑条目")
-        self.resize(600, 480)
+        self.tag_name = tag_name or "默认"
+        self.setWindowTitle(f"编辑条目 - {self.tag_name}")
+        self.resize(760, 520)
 
-        self.table = QTableWidget(0, 3)
+        tag_label = QLabel(f"标签：{self.tag_name}")
+        tag_label.setObjectName("editorTitle")
+        self.page_summary = QLabel()
+
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
         self._fill(items)
 
         clear_btn = QPushButton("清空")
@@ -474,6 +507,11 @@ class EntryEditorDialog(QDialog):
         btn_row.addWidget(ok_btn)
 
         layout = QVBoxLayout(self)
+        title_row = QHBoxLayout()
+        title_row.addWidget(tag_label)
+        title_row.addStretch()
+        title_row.addWidget(self.page_summary)
+        layout.addLayout(title_row)
         layout.addWidget(self.table)
         layout.addLayout(btn_row)
 
@@ -482,21 +520,32 @@ class EntryEditorDialog(QDialog):
     def _fill(self, items):
         self.table.setRowCount(len(items))
         for r, it in enumerate(items):
+            page_item = QTableWidgetItem(str(r // ENTRIES_PER_PAGE + 1))
+            page_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            page_item.setTextAlignment(Qt.AlignCenter)
+            number_item = QTableWidgetItem(str(r))
+            number_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            number_item.setTextAlignment(Qt.AlignCenter)
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled |
                          Qt.ItemIsSelectable)
             chk.setCheckState(Qt.Checked if it.get("hex") else Qt.Unchecked)
             chk.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(r, 0, chk)
-            self.table.setItem(r, 1, QTableWidgetItem(str(it.get("text", ""))))
-            self.table.setItem(r, 2, QTableWidgetItem(str(it.get("desc", ""))))
+            self.table.setItem(r, 0, page_item)
+            self.table.setItem(r, 1, number_item)
+            self.table.setItem(r, 2, chk)
+            self.table.setItem(r, 3, QTableWidgetItem(str(it.get("text", ""))))
+            self.table.setItem(r, 4, QTableWidgetItem(str(it.get("desc", ""))))
+        pages = max(1, (len(items) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE)
+        self.page_summary.setText(
+            f"共 {pages} 页，每页 {ENTRIES_PER_PAGE} 条")
 
     def result_items(self):
         items = []
         for r in range(self.table.rowCount()):
-            chk = self.table.item(r, 0)
-            text = self.table.item(r, 1)
-            desc = self.table.item(r, 2)
+            chk = self.table.item(r, 2)
+            text = self.table.item(r, 3)
+            desc = self.table.item(r, 4)
             items.append({
                 "hex": chk is not None and chk.checkState() == Qt.Checked,
                 "text": text.text() if text else "",
@@ -542,41 +591,48 @@ class EntryEditorDialog(QDialog):
         except (OSError, configparser.Error) as e:
             QMessageBox.critical(self, "导入失败", str(e))
             return
-        # section 名形如 [item1] [item2]...，按编号排序读取
+        # 同时兼容新格式 [指令N] 和旧格式 [itemN]，按编号排序读取。
         def _order(name):
             digits = "".join(c for c in name if c.isdigit())
             return int(digits) if digits else 0
         items = []
         for sec in sorted(parser.sections(), key=_order):
             s = parser[sec]
-            # 手动解析 hex：getboolean 遇到非法值会抛异常
-            hexv = s.get("hex", "0").strip().lower()
+            if not any(key in s for key in ("选择", "指令", "描述",
+                                             "hex", "text", "desc")):
+                continue
+            # 手动解析选择值：getboolean 遇到非法值会抛异常。
+            hexv = s.get("选择", s.get("hex", "False")).strip().lower()
             items.append({
                 "hex": hexv in ("1", "true", "yes", "on", "是", "√"),
-                "text": s.get("text", ""),
-                "desc": s.get("desc", ""),
+                "text": s.get("指令", s.get("text", "")),
+                "desc": s.get("描述", s.get("desc", "")),
             })
         if items:
             self._fill(items)
 
     def _export(self):
+        safe_label = "".join(
+            "_" if c in '<>:"/\\|?*' else c for c in self.tag_name)
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出条目", "xcom_entries.ini", "INI 文件 (*.ini)")
+            self, "导出条目", f"xcom_{safe_label}.ini", "INI 文件 (*.ini)")
         if not path:
             return
         if not path.lower().endswith(".ini"):
             path += ".ini"
         parser = configparser.ConfigParser(interpolation=None)
         parser.optionxform = str
-        for i, it in enumerate(self.result_items(), 1):
-            sec = f"item{i}"
+        for i, it in enumerate(self.result_items()):
+            sec = f"指令{i}"
             parser[sec] = {
-                "hex": "1" if it["hex"] else "0",
-                "text": it["text"],
-                "desc": it["desc"],
+                "选择": "True" if it["hex"] else "False",
+                "指令": it["text"],
+                "描述": it["desc"],
             }
         try:
             with open(path, "w", encoding="utf-8-sig") as f:
-                parser.write(f)
+                f.write(f"; 标签={self.tag_name}\n")
+                f.write(f"; 每页指令数={ENTRIES_PER_PAGE}\n\n")
+                parser.write(f, space_around_delimiters=False)
         except OSError as e:
             QMessageBox.critical(self, "导出失败", str(e))
