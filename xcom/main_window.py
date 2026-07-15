@@ -3,29 +3,42 @@
 from __future__ import annotations
 
 import codecs
+import json
 import os
 from datetime import datetime
 
 import serial
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtGui import (
+    QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygon, QTextCursor,
+)
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QCheckBox, QSpinBox,
     QPlainTextEdit, QMessageBox, QFileDialog, QSplitter, QApplication,
-    QLineEdit, QProgressBar,
+    QLineEdit, QProgressBar, QLayout, QSizePolicy,
 )
 
+from . import __version__
 from .icon import app_icon
+from .paths import app_dir
 from .serial_manager import SerialManager, list_ports
 from .multi_send import MultiSendPage
 from .theme import Backdrop, apply_theme
 
-BAUDRATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600",
-             "115200", "230400", "460800", "921600"]
+BAUDRATES = [
+    "custom", "110", "300", "600", "1200", "2400", "4800", "9600",
+    "14400", "19200", "38400", "43000", "57600", "76800", "115200",
+    "128000", "230400", "256000", "460800", "921600", "1000000",
+    "2000000", "3000000",
+]
 RX_BUFFER_LIMIT = 1024 * 1024       # 接收缓冲上限 1MB
 DISPLAY_CHAR_LIMIT = 8 * 1024 * 1024  # 显示文本超过该字符数时按缓冲重渲染
 FILE_SEND_CHUNK = 64 * 1024
+# 右侧设置栏的常态宽度；需要微调左右占比时只改这里即可。
+RIGHT_PANEL_WIDTH = 155
+DEFAULT_QUICK_COMMAND = "switch_list(0x1f)"
+SINGLE_SEND_CONFIG_PATH = app_dir() / "xcom_single_send.json"
 
 
 class PortComboBox(QComboBox):
@@ -51,6 +64,31 @@ def parse_hex(text: str) -> bytes:
         raise ValueError("包含非16进制字符") from None
 
 
+def port_action_icon(port_is_open: bool) -> QIcon:
+    """生成串口操作图标：打开后显示醒目的红色停止图标。"""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    if port_is_open:
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#FF453A"))
+        painter.drawEllipse(1, 1, 18, 18)
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawRoundedRect(6, 6, 8, 8, 1.5, 1.5)
+    else:
+        # 主按钮是橙色底，使用深色图形以保证缩小后仍有清晰对比。
+        painter.setPen(QPen(QColor("#221302"), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(1.5, 1.5, 17, 17)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#221302"))
+        painter.drawPolygon(QPolygon([QPoint(7, 5), QPoint(15, 10),
+                                      QPoint(7, 15)]))
+    painter.end()
+    return QIcon(pixmap)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -67,8 +105,16 @@ class MainWindow(QMainWindow):
         self._sending_file = False
         self._file_stop = False
         self._tick_busy = False
+        self._single_save_error_shown = False
+        self._single_save_timer = QTimer(self)
+        self._single_save_timer.setSingleShot(True)
+        self._single_save_timer.setInterval(300)
+        self._single_save_timer.timeout.connect(self._save_single_send)
 
         self._build_ui()
+        # 必须在状态栏和中央布局创建后设置，避免它们重新推高窗口最小尺寸。
+        # 内容按现有布局直接裁切，可压缩到只剩标题栏或很窄的一条。
+        self.setMinimumSize(120, 0)
         apply_theme(self)
         self._reset_decoder()
         self.refresh_ports()
@@ -80,13 +126,15 @@ class MainWindow(QMainWindow):
         self.multi_page = MultiSendPage(self.send_data)
         self.setCentralWidget(self._build_main_page())
 
-        self.status_label = QLabel()
+        self.version_label = QLabel(f"X-COM+ v{__version__}")
+        self.version_label.setToolTip(
+            f"单条配置：{SINGLE_SEND_CONFIG_PATH}")
         self.count_label = QLabel()
         self.clock_label = QLabel()
         reset_btn = QPushButton("复位计数")
         reset_btn.clicked.connect(self.reset_counts)
         sb = self.statusBar()
-        sb.addWidget(self.status_label, 1)
+        sb.addWidget(self.version_label, 1)
         sb.addPermanentWidget(self.count_label)
         sb.addPermanentWidget(self.clock_label)
         sb.addPermanentWidget(reset_btn)
@@ -107,10 +155,15 @@ class MainWindow(QMainWindow):
 
         # 右侧串口设置：串口选择下拉时自动枚举端口，无需刷新按钮
         self.port_combo = PortComboBox(self.refresh_ports)
+        # 串口描述可能很长，不能让内容长度反向撑宽整个右侧设置栏。
+        self.port_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.port_combo.setMinimumContentsLength(10)
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(BAUDRATES)
-        self.baud_combo.setCurrentText("115200")
         self.baud_combo.setEditable(True)
+        self.baud_combo.setCurrentIndex(self.baud_combo.findText("115200"))
+        self.baud_combo.activated.connect(self._baud_selected)
         self.stop_combo = QComboBox()
         self.stop_combo.addItems(["1", "1.5", "2"])
         self.data_combo = QComboBox()
@@ -124,9 +177,14 @@ class MainWindow(QMainWindow):
         self.encoding_combo.currentIndexChanged.connect(self.rerender_recv)
         self.open_btn = QPushButton("打开串口")
         self.open_btn.setObjectName("primary")
+        self.open_btn.setIconSize(QSize(16, 16))
         self.open_btn.clicked.connect(self.toggle_port)
+        self._sync_port_button()
 
         grid = QGridLayout()
+        grid.setContentsMargins(2, 2, 2, 2)
+        grid.setHorizontalSpacing(3)
+        grid.setVerticalSpacing(3)
         rows = [
             ("串口选择", self.port_combo),
             ("波特率", self.baud_combo),
@@ -168,6 +226,8 @@ class MainWindow(QMainWindow):
         clear_recv_btn.clicked.connect(self.clear_recv)
 
         recv_ctrl = QVBoxLayout()
+        recv_ctrl.setContentsMargins(2, 2, 2, 2)
+        recv_ctrl.setSpacing(2)
         for w in (self.hex_recv_chk, self.timestamp_chk, self.pause_chk):
             recv_ctrl.addWidget(w)
         recv_btn_row = QHBoxLayout()
@@ -177,11 +237,34 @@ class MainWindow(QMainWindow):
         recv_box = QGroupBox("接收设置")
         recv_box.setLayout(recv_ctrl)
 
+        # 高频发送：右侧常驻一个最常用命令，点击即可按文本 + CRLF 发送。
+        self.quick_send_edit = QLineEdit(DEFAULT_QUICK_COMMAND)
+        self.quick_send_edit.setPlaceholderText("输入常用命令")
+        quick_send_btn = QPushButton("发送")
+        quick_send_btn.setObjectName("primary")
+        quick_send_btn.clicked.connect(self.send_quick_command)
+        quick_layout = QVBoxLayout()
+        quick_layout.setContentsMargins(2, 2, 2, 2)
+        quick_layout.setSpacing(2)
+        quick_layout.addWidget(self.quick_send_edit)
+        quick_layout.addWidget(quick_send_btn)
+        quick_box = QGroupBox("高频发送")
+        quick_box.setLayout(quick_layout)
+
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(2)
         right.addWidget(settings_box)
         right.addWidget(recv_box)
         right.addWidget(self.multi_page.controls_box)
+        right.addWidget(quick_box)
         right.addStretch()
+        for box in (settings_box, recv_box, self.multi_page.controls_box,
+                    quick_box):
+            box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        right_panel = QWidget()
+        right_panel.setLayout(right)
+        right_panel.setFixedWidth(RIGHT_PANEL_WIDTH)
 
         # 发送区：压缩高度，让接收日志区占比更大
         self.send_text = QPlainTextEdit()
@@ -196,7 +279,7 @@ class MainWindow(QMainWindow):
         self.period_spin.setSuffix(" ms")
         send_btn = QPushButton("发送")
         send_btn.setObjectName("primary")
-        send_btn.setFixedSize(80, 55)
+        send_btn.setFixedSize(64, 55)
         send_btn.clicked.connect(self.send_current)
         clear_send_btn = QPushButton("清除发送")
         clear_send_btn.clicked.connect(self.send_text.clear)
@@ -258,17 +341,115 @@ class MainWindow(QMainWindow):
         splitter.setSizes([440, 195])
 
         layout = QHBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 6)
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
         layout.addWidget(splitter, 1)
-        layout.addLayout(right)
+        layout.addWidget(right_panel)
         page = Backdrop()
+        page.setMinimumSize(0, 0)
+        page.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         page.setLayout(layout)
 
         self.send_timer = QTimer(self)
         self.send_timer.timeout.connect(self._timer_send_tick)
+        self._load_single_send()
+        self.send_text.textChanged.connect(self._schedule_single_send_save)
+        self.hex_send_chk.toggled.connect(self._schedule_single_send_save)
+        self.newline_chk.toggled.connect(self._schedule_single_send_save)
+        self.period_spin.valueChanged.connect(self._schedule_single_send_save)
+        self.file_edit.textChanged.connect(self._schedule_single_send_save)
+        self.baud_combo.currentTextChanged.connect(
+            self._schedule_single_send_save)
+        self.quick_send_edit.textChanged.connect(
+            self._schedule_single_send_save)
+        # 首次启动也立即创建配置文件，便于用户确认实际运行版本和保存位置。
+        if not SINGLE_SEND_CONFIG_PATH.exists():
+            self._save_single_send()
         return page
 
+    # ---------- 单条发送持久化 ----------
+
+    def _schedule_single_send_save(self, *_):
+        """输入停止 300ms 后落盘，兼顾实时保存与减少磁盘写入。"""
+        self._single_save_timer.start()
+
+    def _load_single_send(self):
+        try:
+            data = json.loads(SINGLE_SEND_CONFIG_PATH.read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        baudrate = str(data.get("baudrate", "")).strip()
+        if baudrate:
+            index = self.baud_combo.findText(baudrate)
+            if index >= 0:
+                self.baud_combo.setCurrentIndex(index)
+            else:
+                self.baud_combo.setCurrentIndex(-1)
+                self.baud_combo.setEditText(baudrate)
+        self.send_text.setPlainText(str(data.get("text", "")))
+        self.hex_send_chk.setChecked(bool(data.get("hex", False)))
+        self.newline_chk.setChecked(bool(data.get("newline", False)))
+        try:
+            period = int(data.get("period_ms", 1000))
+        except (TypeError, ValueError):
+            period = 1000
+        self.period_spin.setValue(max(1, min(600000, period)))
+        self.file_edit.setText(str(data.get("file_path", "")))
+        self.quick_send_edit.setText(str(
+            data.get("quick_command", DEFAULT_QUICK_COMMAND)))
+
+    def _save_single_send(self):
+        data = {
+            "baudrate": self.baud_combo.currentText().strip(),
+            "text": self.send_text.toPlainText(),
+            "hex": self.hex_send_chk.isChecked(),
+            "newline": self.newline_chk.isChecked(),
+            "period_ms": self.period_spin.value(),
+            "file_path": self.file_edit.text(),
+            "quick_command": self.quick_send_edit.text(),
+        }
+        temp_path = SINGLE_SEND_CONFIG_PATH.with_suffix(".json.tmp")
+        try:
+            SINGLE_SEND_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            temp_path.replace(SINGLE_SEND_CONFIG_PATH)
+            self._single_save_error_shown = False
+        except OSError as e:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if not self._single_save_error_shown:
+                self._single_save_error_shown = True
+                QMessageBox.warning(
+                    self, "单条发送配置保存失败",
+                    f"无法保存到：\n{SINGLE_SEND_CONFIG_PATH}\n\n{e}")
+
     # ---------- 串口开关 ----------
+
+    def _baud_selected(self, index: int):
+        """选择 custom 后清空编辑框，直接等待用户输入自定义波特率。"""
+        if self.baud_combo.itemText(index) == "custom":
+            editor = self.baud_combo.lineEdit()
+            editor.clear()
+            editor.setPlaceholderText("输入自定义波特率")
+
+    def _sync_port_button(self):
+        """让按钮的文字、图标和提示始终反映当前串口状态。"""
+        if self.sm.is_open:
+            self.open_btn.setText("关闭串口")
+            self.open_btn.setIcon(port_action_icon(True))
+            self.open_btn.setToolTip("串口已打开，点击关闭")
+        else:
+            self.open_btn.setText("打开串口")
+            self.open_btn.setIcon(port_action_icon(False))
+            self.open_btn.setToolTip("串口已关闭，点击打开")
 
     def refresh_ports(self):
         current = self.port_combo.currentData()
@@ -309,7 +490,7 @@ class MainWindow(QMainWindow):
             return
         self.sm.set_dtr(self.dtr_chk.isChecked())
         self.sm.set_rts(self.rts_chk.isChecked())
-        self.open_btn.setText("关闭串口")
+        self._sync_port_button()
         self._set_settings_enabled(False)
         self._update_status()
 
@@ -318,7 +499,7 @@ class MainWindow(QMainWindow):
         self.timer_send_chk.setChecked(False)
         self.multi_page.stop_cycle()
         self.sm.close()
-        self.open_btn.setText("打开串口")
+        self._sync_port_button()
         self._set_settings_enabled(True)
         self._update_status()
 
@@ -372,6 +553,11 @@ class MainWindow(QMainWindow):
         if at_bottom:
             sb.setValue(sb.maximum())
 
+    def _scroll_recv_to_bottom(self):
+        """发送指令后定位到最新日志，让随后返回的数据持续自动跟随。"""
+        sb = self.recv_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def rerender_recv(self):
         self._reset_decoder()
         self.recv_text.setPlainText(
@@ -402,6 +588,13 @@ class MainWindow(QMainWindow):
 
     # ---------- 发送 ----------
 
+    def send_quick_command(self) -> bool:
+        text = self.quick_send_edit.text().strip()
+        if not text:
+            QMessageBox.warning(self, "提示", "高频发送命令不能为空")
+            return False
+        return self.send_data(text, is_hex=False, newline=True)
+
     def send_data(self, text: str, is_hex: bool, newline: bool = False) -> bool:
         """所有发送的统一出口，返回是否发送成功。"""
         if not self.sm.is_open:
@@ -419,6 +612,9 @@ class MainWindow(QMainWindow):
             if newline:
                 data += b"\r\n"
             self.sm.write(data)
+            # 用户主动发送指令时，历史日志阅读状态结束，切回最新日志。
+            # 单条和多条发送都经过此统一出口，因此两处行为保持一致。
+            self._scroll_recv_to_bottom()
         except ValueError as e:
             QMessageBox.warning(self, "16进制格式错误", str(e))
             return False
@@ -505,7 +701,6 @@ class MainWindow(QMainWindow):
                     self.tx_count += len(chunk)
                     if total:
                         self.progress.setValue(int(sent * 100 / total))
-                    self.status_label.setText(f"发送文件 {sent}/{total} 字节")
                     QApplication.processEvents()
             if sent >= total and not self._file_stop:
                 self.progress.setValue(100)  # 完整发完（含空文件）进度置满
@@ -532,14 +727,10 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _update_status(self):
-        if self.sm.is_open:
-            self.status_label.setText(
-                f"已打开 {self.sm.ser.port} @ {self.sm.ser.baudrate}")
-        else:
-            self.status_label.setText("串口已关闭")
         self.count_label.setText(f"RX: {self.rx_count}  TX: {self.tx_count}  ")
 
     def closeEvent(self, event):
+        self._save_single_send()
         self.close_port()
         self.multi_page.save()
         super().closeEvent(event)
