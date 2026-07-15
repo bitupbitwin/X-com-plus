@@ -78,7 +78,7 @@ QGroupBox {
     background: rgba(255,255,255,16);
     border: 1px solid rgba(255,255,255,30);
     border-radius: 8px;
-    margin-top: 14px;
+    margin-top: 20px;
     padding: 2px 1px 1px 1px;
     color: #D8D8DE;
 }
@@ -104,7 +104,7 @@ QLineEdit, QComboBox, QSpinBox {
     background: rgba(255,255,255,20);
     border: 1px solid rgba(255,255,255,34);
     border-radius: 5px;
-    padding: 2px 5px;
+    padding: 3px 5px;
     color: #F0F0F4;
     selection-background-color: #FF9500;
     selection-color: #141414;
@@ -151,7 +151,7 @@ QPushButton {
     background: rgba(255,255,255,26);
     border: 1px solid rgba(255,255,255,40);
     border-radius: 5px;
-    padding: 3px 7px;
+    padding: 4px 7px;
     color: #F2F2F5;
 }
 QPushButton:hover { background: rgba(255,255,255,44); }
